@@ -1,8 +1,6 @@
 import os
 import pandas as pd
 from dotenv import load_dotenv
-# The whisper import is no longer needed.
-# We will now use the assemblyai library.
 import assemblyai as aai
 
 # --- LangChain Imports ---
@@ -88,6 +86,23 @@ def create_backlog_with_langchain_rag(docs: list):
     """
     print("Initializing LangChain RAG pipeline...")
 
+    # --- Step 1: Text Chunking ---
+    print("Step 1: Splitting document into chunks...")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    splits = text_splitter.split_documents(docs)
+    print(f"Document split into {len(splits)} chunks.")
+
+    # --- Step 2: Vector Embeddings using Google API ---
+    print("Step 2: Creating vector embeddings with Google's API...")
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_API_KEY)
+    
+    # --- Step 3: Create FAISS Vector Store (In-Memory) ---
+    print("Step 3: Creating FAISS in-memory vector store...")
+    vector_store = FAISS.from_documents(splits, embeddings)
+    print("Vector store created successfully.")
+
+    # --- Step 4: Create the RAG Chain ---
+    print("Step 4: Building the RAG chain...")
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GEMINI_API_KEY)
     structured_llm = llm.with_structured_output(ProductBacklog)
 
@@ -103,16 +118,8 @@ def create_backlog_with_langchain_rag(docs: list):
         """
     )
     
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-    splits = text_splitter.split_documents(docs)
-    
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_API_KEY)
-    
-    vector_store = FAISS.from_documents(splits, embeddings)
-    
-    retriever = vector_store.as_retriever(search_kwargs={"k": 10})
+    retriever = vector_store.as_retriever()
 
-    # Manually construct the RAG chain using LCEL for better control with structured output
     rag_chain = (
         RunnablePassthrough.assign(
             context=(lambda x: x["input"]) | retriever
@@ -122,12 +129,10 @@ def create_backlog_with_langchain_rag(docs: list):
     )
     
     print("Invoking RAG chain to analyze transcript...")
-    # The input dictionary is passed to the start of the chain
     product_backlog_object = rag_chain.invoke({"input": "Find all requirements in the document"})
     
     print("Successfully extracted and structured requirements.")
     
-    # The result of the chain is the Pydantic object directly
     if product_backlog_object:
         return [item.dict() for item in product_backlog_object.backlog_items]
     
