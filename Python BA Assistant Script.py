@@ -9,9 +9,11 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.pydantic_v1 import BaseModel, Field
 from langchain_core.documents import Document
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain_core.runnables import RunnablePassthrough
+# The vector store and retriever imports are no longer needed for this approach
+# from langchain_community.vectorstores import FAISS
+# from langchain_google_genai import GoogleGenerativeAIEmbeddings
+# from langchain_core.runnables import RunnablePassthrough
+from langchain.chains.combine_documents import create_stuff_documents_chain
 
 
 # --- Configuration ---
@@ -26,7 +28,7 @@ ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
 # Load columns from .env, split the string into a list, and provide a default.
 DEFAULT_COLUMNS = [
     "Epic ID", "Epic Name", "User Story ID", "User Story Name", 
-    "As a (User Type)", "I want (Action)", "So that (Benefit)", 
+    "As a (User Type)", "I want to (Action)", "So that (Benefit)", 
     "Acceptance Criteria", "Priority"
 ]
 BACKLOG_COLUMNS_STR = os.getenv("BACKLOG_COLUMNS")
@@ -88,21 +90,12 @@ def create_backlog_with_langchain_rag(docs: list):
 
     # --- Step 1: Text Chunking ---
     print("Step 1: Splitting document into chunks...")
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=4000, chunk_overlap=200)
     splits = text_splitter.split_documents(docs)
     print(f"Document split into {len(splits)} chunks.")
-
-    # --- Step 2: Vector Embeddings using Google API ---
-    print("Step 2: Creating vector embeddings with Google's API...")
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_API_KEY)
     
-    # --- Step 3: Create FAISS Vector Store (In-Memory) ---
-    print("Step 3: Creating FAISS in-memory vector store...")
-    vector_store = FAISS.from_documents(splits, embeddings)
-    print("Vector store created successfully.")
-
-    # --- Step 4: Create the RAG Chain ---
-    print("Step 4: Building the RAG chain...")
+    # --- Step 2: Create the LLM Chain ---
+    print("Step 2: Building the LLM chain for analysis...")
     llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=GEMINI_API_KEY)
     structured_llm = llm.with_structured_output(ProductBacklog)
 
@@ -114,22 +107,20 @@ def create_backlog_with_langchain_rag(docs: list):
         Context:
         {context}
         
-        Question: {input}
+        Task: {input}
         """
     )
     
-    retriever = vector_store.as_retriever()
-
-    rag_chain = (
-        RunnablePassthrough.assign(
-            context=(lambda x: x["input"]) | retriever
-        )
-        | prompt
-        | structured_llm
-    )
+    # Manually create the chain using LCEL to avoid helper function conflicts.
+    chain = prompt | structured_llm
     
-    print("Invoking RAG chain to analyze transcript...")
-    product_backlog_object = rag_chain.invoke({"input": "Find all requirements in the document"})
+    print("Invoking chain to analyze all transcript chunks...")
+    # We provide the list of chunks directly to the chain's 'context' key.
+    # The prompt template will automatically format the documents into a string.
+    product_backlog_object = chain.invoke({
+        "input": "Find all requirements in the document",
+        "context": splits
+    })
     
     print("Successfully extracted and structured requirements.")
     
@@ -161,7 +152,7 @@ def write_to_excel(data, columns, output_path):
         "user_story_id": "User Story ID",
         "user_story_name": "User Story Name",
         "as_a_user_type": "As a (User Type)",
-        "i_want_action": "I want (Action)",
+        "i_want_action": "I want to (Action)",
         "so_that_benefit": "So that (Benefit)",
         "acceptance_criteria": "Acceptance Criteria",
         "priority": "Priority"
